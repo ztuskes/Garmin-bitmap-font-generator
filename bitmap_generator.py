@@ -13,6 +13,12 @@ from config import (
 )
 from font_manager import download_google_font
 
+def get_style_flags(font_style):
+    """Extract bold and italic flags from font style string."""
+    bold = any(weight in font_style for weight in ['700', '800', '900', 'bold'])
+    italic = 'italic' in font_style
+    return bold, italic
+
 def find_char_boundaries(img):
     """Find the actual character boundaries by analyzing pixel data"""
     data = np.array(img)
@@ -31,26 +37,21 @@ def find_char_boundaries(img):
 
 def render_character(char, font, padding=0):
     """Render a single character and find its true boundaries"""
-    # Create an image 3x the font size to ensure enough space
     font_size = font.size
     temp_img = Image.new('L', (font_size * 3, font_size * 3), 0)
     temp_draw = ImageDraw.Draw(temp_img)
     
-    # Draw the character in the center of the image
     bbox = temp_draw.textbbox((font_size, font_size), char, font=font)
     temp_draw.text((font_size, font_size), char, font=font, fill=255)
     
-    # Find the actual boundaries
     left, top, right, bottom = find_char_boundaries(temp_img)
     
     if left == right or top == bottom:
-        # Handle space or empty characters
         width = font_size // 3
         height = font_size
         char_img = Image.new('L', (width, height), 0)
         return char_img, width, height
     
-    # Extract the character with padding
     width = right - left + (padding * 2)
     height = bottom - top + (padding * 2)
     
@@ -69,12 +70,15 @@ def generate_bitmap_font(font_name, font_size):
         
         font_file, font_name, font_style = download_google_font(font_name, api_key)
         font_id = f"{font_name.replace(' ', '')}_{font_style}"
+        is_bold, is_italic = get_style_flags(font_style)
 
-        with Progress(console=console) as progress:
-            task = progress.add_task(f"Generating bitmap fonts", total=len(SIZES))
+        with Progress(console=console, expand=True) as progress:
+            tasks = {
+                size: progress.add_task(f"[cyan]Processing {size}x{size}", total=100)
+                for size in SIZES
+            }
             
             for size in SIZES:
-                progress.update(task, description=f"Processing {size}x{size} resolution")
                 dir_name = os.path.join(OUTPUT_DIR, f"resources-{size}x{size}")
                 os.makedirs(dir_name, exist_ok=True)
                 
@@ -87,6 +91,9 @@ def generate_bitmap_font(font_name, font_size):
                 rows = []
                 current_row_width = 0
                 max_width = 0
+                
+                # Update progress to 25% after initialization
+                progress.update(tasks[size], completed=25)
                 
                 # First pass: Generate all character images and collect metrics
                 for char in characters:
@@ -111,13 +118,14 @@ def generate_bitmap_font(font_name, font_size):
                     rows.append(row_data)
                     max_width = max(max_width, current_row_width)
                 
-                # Calculate total height
+                # Update progress to 50% after character generation
+                progress.update(tasks[size], completed=50)
+                
                 total_height = sum(
                     max(char_data[char]["height"] for char in row)
                     for row in rows
                 )
                 
-                # Create final image
                 final_img = Image.new("L", (max_width, total_height), 0)
                 y_offset = 0
                 
@@ -132,7 +140,9 @@ def generate_bitmap_font(font_name, font_size):
                         x_offset += data["width"]
                     y_offset += row_height
                 
-                # Save the PNG
+                # Update progress to 75% after image composition
+                progress.update(tasks[size], completed=75)
+                
                 png_path = os.path.join(dir_name, f"{font_id}.png")
                 final_img.save(png_path)
                 
@@ -142,14 +152,13 @@ def generate_bitmap_font(font_name, font_size):
                     fnt_file.write("info face=\"{}\" size={} bold={} italic={} charset=\"\" unicode=1 stretchH=100 smooth=1 aa=1 padding=0,0,0,0 spacing=0,0 outline=0\n".format(
                         font_name,
                         scaled_font_size,
-                        1 if "bold" in font_style else 0,
-                        1 if "italic" in font_style else 0
+                        1 if is_bold else 0,
+                        1 if is_italic else 0
                     ))
                     fnt_file.write(f"common lineHeight={scaled_font_size} base={scaled_font_size} scaleW={max_width} scaleH={total_height} pages=1 packed=0\n")
                     fnt_file.write(f"page id=0 file=\"{font_id}.png\"\n")
                     fnt_file.write(f"chars count={len(char_data)}\n")
                     
-                    # Write character information
                     y_offset = 0
                     for row in rows:
                         x_offset = 0
@@ -179,9 +188,11 @@ def generate_bitmap_font(font_name, font_size):
                 tree = ET.ElementTree(fonts)
                 tree.write(xml_path)
                 
-                progress.advance(task)
+                # Complete progress for this size
+                progress.update(tasks[size], completed=100)
+                console.print(f"[green]✓[/green] Completed {size}x{size} resolution")
             
-            console.print(f"[green]Successfully generated bitmap fonts in {OUTPUT_DIR}[/green]")
+            console.print(f"\n[green]Successfully generated bitmap fonts in {OUTPUT_DIR}[/green]")
 
     except Exception as e:
         console.print(Panel.fit(
@@ -189,7 +200,7 @@ def generate_bitmap_font(font_name, font_size):
             title="Generation Error"
         ))
         sys.exit(1)
-
+        
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Download Google Font and generate bitmap font assets.")
